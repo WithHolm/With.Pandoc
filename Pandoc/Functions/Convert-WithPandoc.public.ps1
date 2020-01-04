@@ -1,9 +1,10 @@
-function Convert-WithPandoc {
+function Convert-WithPandoc
+{
     [CmdletBinding()]
     param (
         [parameter(
             Mandatory,
-            HelpMessage="Fileinfo,Directoryinfo,File Fullname,URL",
+            HelpMessage = "Fileinfo,Directoryinfo,File Fullname,URL",
             ValueFromPipeline)]
         $inputobject,
 
@@ -27,8 +28,8 @@ function Convert-WithPandoc {
         )]
         $InputType,
         
-        # [String]$Datatype,
-        
+        [string[]]$InputGrouping,
+
         [ValidateSet(
             'asciidoc', 'asciidoctor', 
             'beamer', 'commonmark', 
@@ -55,154 +56,144 @@ function Convert-WithPandoc {
             'revealjs', 'rst', 
             'rtf', 's5', 
             'slideous', 'slidy', 
+            
             'tei', 'texinfo', 
             'textile', 'xwiki', 
             'zimwiki'
         )]
         [String]$Outputtype,
-        # [parameter(Mandatory,HelpMessage="supports only html or docx")]
-        # [System.IO.FileInfo]$Outputobject,
 
-        [string[]]$Sort,
+        [switch]$ExtractMedia,
+
+        [String]$Mediapath,
 
         [switch]$TOC,
 
         [int]$TocDepth,
 
-        $Metadata
+        [switch]$PreserveTabs,
+
+        [parameter(
+            HelpMessage = "Hashtable or FileInfo/Path to Yaml/Json file with metadata"
+        )]
+        $Metadata,
+
+        $DefaultsFile
     )
     
-    begin {
-        $Arguments = @()
-        if($Metadata)
-        {
-            if($Metadata -is [hashtable])
-            {
-                $arguments += "--metadata $($Metadata.Keys|%{"$_='$($Metadata[$_])'"})"
-            }
-            elseif ($Metadata -is [System.IO.FileInfo]) {
-                if(!$Metadata.exists)
-                {
+    begin
+    {
+        $Arguments = @{}
 
-                }
-            }
+        if($PreserveTabs)
+        {
+            $Arguments."--preserve-tabs" = ""
         }
 
-        $Source = @()
-
-        if($TocDepth -and !$TOC)
+        if ($TocDepth -and !$TOC)
         {
             Write-Warning "TocDepth is only viable if toc is enabled"
         }
-    }
-    
-    process {
-        Foreach($item in $inputobject)
+
+        if($InputType)
         {
-            if($item -is [System.IO.FileInfo])
-            {
-
-                Write-Verbose "File $($item.Fullname)"
-                $source += $item.Fullname
-            }
-            elseif($item -is [uri])
-            {
-                Write-Verbose "URI $($item.OriginalString)"
-                $source = $item.OriginalString
-            }
-            elseif($item -is [string])
-            {
-                if($item -like "http*")
-                {
-                    Write-Verbose "URL: $item"
-                    $Source += $item
-                }
-                elseif(test-path $item)
-                {
-                    Write-Verbose "File: $item"
-                    $Source += $item
-
-                }
-                else {
-                    throw "Unknown item '$item'"
-                }
-            }
-            else {
-                Write-warning "Not counting $item. its not a FileInfo, URI or a string to a filepath"
-            }
+            $Arguments."--read" = $InputType 
         }
-    }
-    
-    end {
-        #Sort
-        if($Sort)
-        {
-            $UsingSource = @()
-            Foreach($S in $sort)
-            {
-                $UsingSource += $Source|Where-Object{$_.name -like $S}
-            }
-            if($UsingSource.count -ne $Source.count)
-            {
-                $UsingSource += $Source
-            }
-
-            $UsingSource = $UsingSource|Select-Object -Unique
-        }
-        else {
-            $UsingSource = $Source
-        }
-
-        $UsingSource = $UsingSource|%{
-            "'$_'"
-        }
-
-        # #outfiletypes
         
-        if($OutFile.Extension -notin @("html","docx"))
+        if($Outputtype)
         {
-
+            $Arguments."--write" = $Outputtype 
         }
-
-        $Arguments = @(
-            "-s $($Source -join " ")"
-        )
-        if($TOC)
-        {
-            $Arguments += "--table-of-contents"
-        }
-
-        $Arguments += "-o '$outfile'"
-        if($VerbosePreference -eq "Continue")
-        {
-            $Arguments += "--verbose"
-        }
-
-        # if($Metadata)
+        # if($ExtractMedia)
         # {
-        #     $Arguments += "--metadata $($Metadata.Keys|%{"$_='$($Metadata[$_])'"})"
-        # }
-        Write-Verbose ($Arguments -join " ")
 
-        "pandoc $($arguments -join " ")"|Invoke-Expression -ov proc|Out-Null
-        $proc|%{
-            Write-Host "hey $_"
-            if($_ -like "[Warning]*")
+        # }
+    }
+    
+    process
+    {
+        $source += Merge-PandocSources -inputobject $inputobject 
+    }
+    
+    end
+    {
+        if(!$SourceGrouping)
+        {
+            $InputGrouping = "*"
+        }
+        $source = Group-PandocSources -Source $Source -Grouping $InputGrouping
+
+        #If Metadata is defined
+        if ($Metadata)
+        {
+            Set-PandocMetadata -Arguments $Arguments -metadata $Metadata
+        }
+
+        #Set source
+        # $Arguments."-s" = $($Source -join " ")
+
+
+        if ($TOC)
+        {
+            $Arguments."--table-of-contents" = ""
+        }
+
+        if ($VerbosePreference -eq "Continue")
+        {
+            $Arguments."--verbose" = ""
+        }
+
+        # Write-Verbose $($Arguments|ConvertTo-Json)
+        
+
+        $Arg = @()
+        $Arguments.Keys|%{
+            if([string]::IsNullOrEmpty($Arguments.$_))
             {
-                Write-warning $_
-            }
-            elseif($_ -like "*--metadata*")
-            {
-                Write-Verbose "$_ Powershell: -Metadata @{key='Value'}"
+                $arg += $_
             }
             else {
-                Write-Information $_
+                $arg += "$_=$($Arguments.$_)"
             }
         }
+        $Arg += $($Source -join " ")
+        Write-Verbose "$Arg"
+
+        Start-Process (get-command pandoc).Path -ArgumentList $Arg -Wait -NoNewWindow -Verbose # -RedirectStandardOutput proc -RedirectStandardError procerr 
+
+        if($procerr)
+        {
+            $procerr|%{
+                Write-Error $_
+            }
+        }
+
+        if($proc)
+        {
+            $proc|%{
+                Write-Verbose $_
+            }
+        }
+        # [void]("pandoc $($Arg -join " ")" | Invoke-Expression -ov proc)
+        # $proc | % {
+        #     Write-Host "hey $_"
+        #     if ($_ -like "[Warning]*")
+        #     {
+        #         Write-warning $_
+        #     }
+        #     elseif ($_ -like "*--metadata*")
+        #     {
+        #         Write-Verbose "$_ Powershell: -Metadata @{key='Value'}"
+        #     }
+        #     else
+        #     {
+        #         Write-Information $_
+        #     }
+        # }
     }
 }
 
-get-item "C:\git\With.Pandoc\README.md"|Convert-WithPandoc
+# get-item "C:\git\With.Pandoc\README.md"|Convert-WithPandoc -Verbose
 
 
 <#
